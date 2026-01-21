@@ -1,0 +1,178 @@
+#include <ESP8266WiFi.h>
+#include <ESP8266WebServer.h>
+#include <DNSServer.h>
+#include <ArduinoOTA.h>
+
+// MUST be before IRremote.hpp
+#define USE_ACTIVE_LOW_OUTPUT_FOR_SEND_PIN
+#include <IRremote.hpp>
+
+// ===== WiFi AP =====
+const char* ap_ssid = "DVD_IR_REMOTE";
+const char* ap_pass = "12345678";   // "" for open AP
+
+ESP8266WebServer server(80);
+DNSServer dnsServer;
+const byte DNS_PORT = 53;
+
+// ===== IR =====
+#define IR_SEND_PIN D2        // GPIO4
+#define NEC_ADDRESS 0x01
+
+// ===== HTML (PROGMEM) =====
+const char PAGE[] PROGMEM = R"rawliteral(
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DVD IR Remote</title>
+<style>
+body{font-family:system-ui,-apple-system,BlinkMacSystemFont,sans-serif;
+background:#f2f2f7;margin:0;padding:12px;text-align:center}
+h2{margin:8px 0 16px;font-weight:600}
+.section{margin-bottom:18px}
+button{width:92px;height:50px;font-size:15px;border:1px solid #d1d1d6;
+border-radius:10px;background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.08)}
+button:active{background:#e5e5ea}
+.wide{width:160px}
+.power{background:#ff3b30;color:#fff;border:none}
+.power:active{background:#d70015}
+.dpad{display:grid;grid-template-columns:92px 92px 92px;
+grid-template-rows:50px 50px 50px;gap:10px;justify-content:center}
+.empty{visibility:hidden}
+.row{display:flex;justify-content:center;gap:10px;flex-wrap:wrap}
+</style>
+</head>
+<body>
+
+<h2>DVD IR Remote</h2>
+
+<div class="section">
+<button class="power wide" onclick="send(0x16)">POWER</button>
+</div>
+
+<div class="section dpad">
+<div class="empty"></div><button onclick="send(0x5B)">▲</button><div class="empty"></div>
+<button onclick="send(0x1C)">◀</button><button onclick="send(0x18)">OK</button><button onclick="send(0x14)">▶</button>
+<div class="empty"></div><button onclick="send(0x19)">▼</button><div class="empty"></div>
+</div>
+
+<div class="section row">
+<button onclick="send(0x1D)">⏮</button>
+<button onclick="send(0x0F)">▶</button>
+<button onclick="send(0x13)">■</button>
+<button onclick="send(0x15)">⏭</button>
+</div>
+
+<div class="section row">
+<button onclick="send(0x5F)">MENU</button>
+<button onclick="send(0x57)">SETUP</button>
+<button onclick="send(0x1A)">DISPLAY</button>
+</div>
+
+<div class="section row">
+<button onclick="send(0x06)">ZOOM</button>
+<button onclick="send(0x0A)">ANGLE</button>
+<button onclick="send(0x12)">SUB</button>
+<button onclick="send(0x0E)">AUDIO</button>
+</div>
+
+<div class="section row">
+<button onclick="send(0x50)">REPEAT</button>
+<button onclick="send(0x4C)">A-B</button>
+<button onclick="send(0x1E)">EJECT</button>
+</div>
+
+<script>
+function send(cmd){
+  fetch("/ir?c="+cmd.toString(16));
+}
+</script>
+
+</body>
+</html>
+)rawliteral";
+
+// ===== HTTP handlers =====
+void handleRoot() {
+  server.send_P(200, "text/html", PAGE);
+}
+
+void handleIR() {
+  if (!server.hasArg("c")) {
+    server.send(400, "text/plain", "Missing command");
+    return;
+  }
+  uint8_t cmd = strtoul(server.arg("c").c_str(), nullptr, 16);
+  Serial.printf("[IR] addr=0x%02X cmd=0x%02X\n", NEC_ADDRESS, cmd);
+  IrSender.sendNEC(NEC_ADDRESS, cmd, 0);
+  server.send(200, "text/plain", "OK");
+}
+
+// ===== Captive portal redirects =====
+void captiveRedirect() {
+  server.sendHeader("Location", "/", true);
+  server.send(302, "text/plain", "");
+}
+
+void setup() {
+  Serial.begin(115200);
+  delay(200);
+  Serial.println("\nESP8266 IR Remote – AP + OTA");
+
+  // --- WiFi AP ---
+  WiFi.mode(WIFI_AP);
+  IPAddress apIP(192,168,4,1);
+  WiFi.softAPConfig(apIP, apIP, IPAddress(255,255,255,0));
+  WiFi.softAP(ap_ssid, ap_pass);
+
+  dnsServer.start(DNS_PORT, "*", apIP);
+
+  Serial.print("AP SSID: ");
+  Serial.println(ap_ssid);
+  Serial.print("IP: ");
+  Serial.println(apIP);
+
+  // --- OTA ---
+  ArduinoOTA.setHostname("dvd-ir-remote");
+
+  ArduinoOTA.onStart([]() {
+    Serial.println("[OTA] Start");
+  });
+  ArduinoOTA.onEnd([]() {
+    Serial.println("\n[OTA] End");
+  });
+  ArduinoOTA.onProgress([](unsigned int p, unsigned int t) {
+    Serial.printf("[OTA] %u%%\r", (p * 100) / t);
+  });
+  ArduinoOTA.onError([](ota_error_t e) {
+    Serial.printf("[OTA] Error %u\n", e);
+  });
+
+  ArduinoOTA.begin();
+  Serial.println("OTA ready");
+
+  // --- IR ---
+  IrSender.begin(IR_SEND_PIN, ENABLE_LED_FEEDBACK);
+  Serial.println("IR sender ready (ACTIVE LOW)");
+
+  // --- HTTP ---
+  server.on("/", handleRoot);
+  server.on("/ir", handleIR);
+
+  // OS captive portal probes
+  server.on("/generate_204", captiveRedirect);        // Android
+  server.on("/hotspot-detect.html", captiveRedirect); // iOS
+  server.on("/ncsi.txt", captiveRedirect);            // Windows
+  server.onNotFound(captiveRedirect);
+
+  server.begin();
+  Serial.println("HTTP + DNS started");
+}
+
+void loop() {
+  dnsServer.processNextRequest();
+  server.handleClient();
+  ArduinoOTA.handle();
+}
