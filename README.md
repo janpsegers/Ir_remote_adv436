@@ -11,14 +11,12 @@ Standalone Wi-Fi IR remote based on **ESP8266 / NodeMCU**.
 - 🌐 **DNS captive portal** (auto-opens browser)
 - 📱 iOS-style web UI
 - 🔁 NEC IR protocol
-- 🔌 **PNP transistor support** (active-low output)
-- 🔄 **OTA updates**
 - 🖥 Serial debug @ 115200 baud
 
 ## Hardware
 - NodeMCU / ESP8266
 - IR LED + resistor
-- PNP transistor (base via resistor)
-- Optional status LED
+- NPN transistor (base via resistor)
 
-### IR wiring (PNP)
+
+### IR wiring (NPN)
